@@ -1,0 +1,29 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Word / Office docs (personal project files)
+*.docx
+*.doc
+*.xlsx
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
