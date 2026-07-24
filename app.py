@@ -227,32 +227,39 @@ gemini_model = GEMINI_MODELS[0]
 gemini_valid = False
 
 if use_gemini:
-    st.sidebar.markdown(
-        "**Get a free API key:** [aistudio.google.com](https://aistudio.google.com/app/apikey)\n"
-        "Free tier: 1,500 requests/day · No credit card needed"
-    )
-    
-    # Try fetching key from st.secrets first if available (Streamlit Cloud secret)
-    default_key = ""
+    # Check if a server-side secret API key exists (Streamlit Cloud Secrets)
+    server_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
-            default_key = st.secrets["GEMINI_API_KEY"]
+            server_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
         pass
 
-    gemini_api_key = st.sidebar.text_input(
+    if server_key:
+        st.sidebar.markdown('<div class="status-badge-connected">🔒 System API Key Active</div>', unsafe_allow_html=True)
+        st.sidebar.caption("App is ready to use! Optional: Enter your own key below to override.")
+    else:
+        st.sidebar.markdown(
+            "**Get a free API key:** [aistudio.google.com](https://aistudio.google.com/app/apikey)\n"
+            "Free tier: 1,500 requests/day · No credit card needed"
+        )
+
+    user_key_input = st.sidebar.text_input(
         "🔑 Gemini API Key",
-        value=default_key,
+        value="",
         type="password",
-        placeholder="AIza...",
+        placeholder="AIza... (Leave empty to use System Key)" if server_key else "AIza...",
         help="Paste your Google AI Studio API key here."
     )
 
-    # Dynamically fetch models if key is entered, else use fallback list
+    # Use custom user key if entered, otherwise fallback to server secret key
+    gemini_api_key = user_key_input.strip() if user_key_input.strip() else server_key
+
+    # Fetch models
     if gemini_api_key:
         available_gemini_models, fetch_err = get_available_gemini_models(gemini_api_key)
         if fetch_err:
-            st.sidebar.caption(f"⚠️ Could not fetch model list: using defaults.")
+            st.sidebar.caption("⚠️ Could not fetch model list: using defaults.")
             available_gemini_models = GEMINI_MODELS
     else:
         available_gemini_models = GEMINI_MODELS
@@ -261,7 +268,7 @@ if use_gemini:
         "✨ Gemini Model",
         options=available_gemini_models,
         index=0,
-        help="gemini-3.1-flash is fastest. gemini-3.5-flash is highest quality."
+        help="gemini-2.5-flash is fastest. gemini-2.5-pro is highest quality."
     )
 
     if gemini_api_key:
