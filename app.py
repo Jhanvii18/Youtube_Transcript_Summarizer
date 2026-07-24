@@ -170,8 +170,9 @@ st.sidebar.markdown("### ⚙️ Engine Settings")
 # ── Backend Selector ──────────────────────────────────────
 backend = st.sidebar.radio(
     "🔧 Summarization Backend",
-    options=["🏠 Local Ollama", "✨ Gemini Cloud API"],
-    help="Local Ollama runs on your CPU/GPU. Gemini Cloud is faster and free (requires API key)."
+    options=["✨ Gemini Cloud API", "🏠 Local Ollama"],
+    index=0,
+    help="Gemini Cloud is fast and works anywhere. Local Ollama runs on your local PC."
 )
 use_gemini = backend == "✨ Gemini Cloud API"
 
@@ -196,12 +197,9 @@ if not use_gemini:
             models = []
     else:
         st.sidebar.markdown('<div class="status-badge-disconnected">● Ollama Offline</div>', unsafe_allow_html=True)
-        st.sidebar.warning(
-            "⚠️ **Ollama is not running locally!**\n\n"
-            "Please follow these setup steps:\n"
-            "1. Install and run **Ollama** ([ollama.com](https://ollama.com))\n"
-            "2. Pull a model: `ollama pull llama3.2:1b`\n"
-            "3. Refresh this page."
+        st.sidebar.info(
+            "ℹ️ **Ollama runs locally on your PC.**\n\n"
+            "If using Streamlit Cloud web host, please switch to **✨ Gemini Cloud API** above."
         )
         models = []
 
@@ -233,8 +231,18 @@ if use_gemini:
         "**Get a free API key:** [aistudio.google.com](https://aistudio.google.com/app/apikey)\n"
         "Free tier: 1,500 requests/day · No credit card needed"
     )
+    
+    # Try fetching key from st.secrets first if available (Streamlit Cloud secret)
+    default_key = ""
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            default_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+
     gemini_api_key = st.sidebar.text_input(
         "🔑 Gemini API Key",
+        value=default_key,
         type="password",
         placeholder="AIza...",
         help="Paste your Google AI Studio API key here."
