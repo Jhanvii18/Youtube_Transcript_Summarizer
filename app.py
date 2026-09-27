@@ -1338,6 +1338,37 @@ alt="Thumbnail">
         )
 
 
+        total_time = (
+            st.session_state.stats.get(
+                "total_time",
+                0
+            )
+        )
+
+
+        extract_time = (
+            st.session_state.stats.get(
+                "extract_time",
+                0
+            )
+        )
+
+
+        summarize_time = (
+            st.session_state.stats.get(
+                "summarize_time",
+                0
+            )
+        )
+
+
+        chapter_time = (
+            st.session_state.stats.get(
+                "chapter_time"
+            )
+        )
+
+
         reduction = round(
             (
                 1
@@ -1417,10 +1448,7 @@ Reading Time Saved
                 f"""<div class="stat-box">
 
 <div class="stat-val">
-{st.session_state.stats.get(
-    "total_time",
-    0
-)}s
+{total_time}s
 </div>
 
 <div class="stat-label">
@@ -1453,31 +1481,27 @@ Summary Processing Time
 
 
         st.write(
-            "- **Transcript extraction:** "
-            f"`{st.session_state.stats.get(
-                'extract_time',
-                0
-            )}s`"
+            f"- **Transcript extraction:** "
+            f"`{extract_time}s`"
         )
 
 
         st.write(
-            "- **Summary generation:** "
-            f"`{st.session_state.stats.get(
-                'summarize_time',
-                0
-            )}s`"
+            f"- **Summary generation:** "
+            f"`{summarize_time}s`"
         )
 
 
-        st.write(
-            "- **Chapter generation:** "
-            f"`{st.session_state.stats.get(
-                'chapter_time',
-                'Not generated'
-            )}s`"
-            if st.session_state.stats.get(
-                "chapter_time"
-            ) is not None
-            else "- **Chapter generation:** Not generated"
-        )
+        if chapter_time is not None:
+
+            st.write(
+                f"- **Chapter generation:** "
+                f"`{chapter_time}s`"
+            )
+
+        else:
+
+            st.write(
+                "- **Chapter generation:** "
+                "Not generated"
+            )
