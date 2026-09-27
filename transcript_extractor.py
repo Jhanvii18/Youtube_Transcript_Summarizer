@@ -1,190 +1,649 @@
-import re
+import glob
 import json
-import urllib.request
-from youtube_transcript_api import YouTubeTranscriptApi
+import os
+import re
+import tempfile
+
 import yt_dlp
+from youtube_transcript_api import YouTubeTranscriptApi
+
+
+# ============================================================
+# EXTRACT YOUTUBE VIDEO ID
+# ============================================================
 
 def extract_video_id(url):
-    """
-    Extracts the 11-character YouTube video ID from a URL.
-    """
-    pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
+
+    pattern = (
+        r"(?:https?://)?(?:www\.)?"
+        r"(?:youtube\.com/"
+        r"(?:[^/\n\s]+/\S+/|"
+        r"(?:v|e(?:mbed)?)\/|"
+        r"\S*?[?&]v=)"
+        r"([a-zA-Z0-9_-]{11})"
+        r"|youtu\.be/"
+        r"([a-zA-Z0-9_-]{11}))"
+    )
+
+    match = re.search(
+        pattern,
+        url,
+    )
+
+    if not match:
+        return None
+
+    return (
+        match.group(1)
+        or match.group(2)
+    )
+
+
+# ============================================================
+# VIDEO METADATA
+# ============================================================
 
 def get_video_metadata(url):
-    """
-    Fetches video metadata (title, channel, thumbnail, duration) using yt-dlp.
-    """
-    ydl_opts = {
-        'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-    }
+
+    video_id = extract_video_id(url)
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            metadata = {
-                'title': info.get('title', 'Unknown Title'),
-                'channel': info.get('uploader', 'Unknown Channel'),
-                'thumbnail': info.get('thumbnail', ''),
-                'duration': info.get('duration', 0), # in seconds
-                'view_count': info.get('view_count', 0),
+
+        with yt_dlp.YoutubeDL(
+            {
+                "skip_download": True,
+                "quiet": True,
+                "no_warnings": True,
             }
-            return metadata, None
-    except Exception as e:
-        return None, f"Failed to retrieve metadata: {str(e)}"
+        ) as ydl:
 
-def get_transcript_via_api(video_id):
-    """
-    Attempts to fetch transcript using the youtube-transcript-api.
-    Prefers English, falls back to Hindi/Urdu, and finally falls back to any available language.
-    """
+            info = ydl.extract_info(
+                url,
+                download=False,
+            )
+
+        return {
+            "video_id": video_id,
+            "title": info.get(
+                "title",
+                "Unknown Title",
+            ),
+            "channel": info.get(
+                "uploader",
+                "Unknown Channel",
+            ),
+            "thumbnail": info.get(
+                "thumbnail",
+                "",
+            ),
+            "duration": info.get(
+                "duration",
+                0,
+            ) or 0,
+            "view_count": info.get(
+                "view_count",
+                0,
+            ) or 0,
+        }, None
+
+    except Exception as e:
+
+        return (
+            None,
+            f"Failed to retrieve metadata: {str(e)}",
+        )
+
+
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
+def _clean_text(text):
+
+    text = re.sub(
+        r"<[^>]+>",
+        "",
+        text or "",
+    )
+
+    text = text.replace(
+        "&nbsp;",
+        " ",
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
+
+
+# ============================================================
+# REMOVE DUPLICATE SEGMENTS
+# ============================================================
+
+def _deduplicate_segments(segments):
+
+    cleaned = []
+    previous = None
+
+    for seg in sorted(
+        segments,
+        key=lambda x: float(
+            x.get("start", 0)
+        ),
+    ):
+
+        text = _clean_text(
+            seg.get(
+                "text",
+                "",
+            )
+        )
+
+        if not text:
+            continue
+
+        if text == previous and cleaned:
+            continue
+
+        cleaned.append(
+            {
+                "text": text,
+                "start": float(
+                    seg.get(
+                        "start",
+                        0,
+                    )
+                ),
+                "duration": float(
+                    seg.get(
+                        "duration",
+                        0,
+                    )
+                ),
+            }
+        )
+
+        previous = text
+
+    return cleaned
+
+
+# ============================================================
+# YOUTUBE TRANSCRIPT API
+# ============================================================
+
+def _fetch_api_segments(video_id):
+
+    api = YouTubeTranscriptApi()
+
+    transcript_list = api.list(
+        video_id
+    )
+
+    transcript = None
+
+    # Prefer English
     try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-        
-        # 1. Try finding manually created or generated English transcript
-        try:
-            transcript = transcript_list.find_transcript(['en'])
-        except Exception:
-            try:
-                # 2. Try Hindi or Urdu (very common fallback languages)
-                transcript = transcript_list.find_transcript(['hi', 'ur'])
-            except Exception:
-                # 3. Get the first available transcript in the list
-                transcripts_available = list(transcript_list)
-                if transcripts_available:
-                    transcript = transcripts_available[0]
-                else:
-                    return None, "No transcripts available for this video."
-            
-        data = transcript.fetch()
-        text = " ".join([item.text for item in data])
-        cleaned_text = re.sub(r'\s+', ' ', text).strip()
-        return cleaned_text, None
-    except Exception as e:
-        return None, str(e)
 
-def get_transcript_via_yt_dlp(url):
-    """
-    Fallback method using yt-dlp to download subtitle/captions directly using
-    yt-dlp's internal downloading engine, avoiding HTTP 429 rate limit blocks.
-    """
-    import tempfile
-    import os
-    import glob
-    
-    # Create a temporary directory to save the downloaded subtitles
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Define output template for the subtitle file
-        outtmpl = os.path.join(temp_dir, 'subs')
-        ydl_opts = {
-            'skip_download': True,
-            'writesubtitles': True,
-            'writeautomaticsub': True,
-            'subtitleslangs': ['en'],
-            'outtmpl': outtmpl,
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
+        transcript = transcript_list.find_transcript(
+            ["en"]
+        )
+
+    except Exception:
+
+        # Try Hindi / Urdu
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+            transcript = transcript_list.find_transcript(
+                ["hi", "ur"]
+            )
+
+        except Exception:
+
+            available = list(
+                transcript_list
+            )
+
+            if not available:
+                return (
+                    None,
+                    "No transcripts available for this video.",
+                )
+
+            transcript = available[0]
+
+    fetched = transcript.fetch()
+
+    segments = []
+
+    for item in fetched:
+
+        if hasattr(item, "text"):
+
+            text = item.text
+            start = item.start
+            duration = item.duration
+
+        elif isinstance(item, dict):
+
+            text = item.get(
+                "text",
+                "",
+            )
+
+            start = item.get(
+                "start",
+                0,
+            )
+
+            duration = item.get(
+                "duration",
+                0,
+            )
+
+        else:
+            continue
+
+        segments.append(
+            {
+                "text": text,
+                "start": float(start),
+                "duration": float(duration),
+            }
+        )
+
+    segments = _deduplicate_segments(
+        segments
+    )
+
+    if segments:
+
+        return segments, None
+
+    return (
+        None,
+        "Transcript was found, but it contained no readable text.",
+    )
+
+
+# ============================================================
+# PARSE JSON3 SUBTITLES
+# ============================================================
+
+def _parse_json3(content):
+
+    data = json.loads(
+        content
+    )
+
+    segments = []
+
+    for event in data.get(
+        "events",
+        [],
+    ):
+
+        start_ms = event.get(
+            "tStartMs",
+            0,
+        )
+
+        duration_ms = event.get(
+            "dDurationMs",
+            0,
+        )
+
+        text = _clean_text(
+            "".join(
+                seg.get(
+                    "utf8",
+                    "",
+                )
+                for seg in event.get(
+                    "segs",
+                    [],
+                )
+            )
+        )
+
+        if text:
+
+            segments.append(
+                {
+                    "text": text,
+                    "start": (
+                        float(start_ms)
+                        / 1000
+                    ),
+                    "duration": (
+                        float(duration_ms)
+                        / 1000
+                    ),
+                }
+            )
+
+    return _deduplicate_segments(
+        segments
+    )
+
+
+# ============================================================
+# PARSE WEBVTT
+# ============================================================
+
+def _parse_vtt(content):
+
+    lines = content.splitlines()
+
+    segments = []
+    i = 0
+
+    def parse_time(value):
+
+        parts = (
+            value
+            .replace(",", ".")
+            .split(":")
+        )
+
+        if len(parts) == 3:
+
+            return (
+                int(parts[0]) * 3600
+                + int(parts[1]) * 60
+                + float(parts[2])
+            )
+
+        return (
+            int(parts[0]) * 60
+            + float(parts[1])
+        )
+
+    while i < len(lines):
+
+        line = lines[i].strip()
+
+        if "-->" not in line:
+
+            i += 1
+            continue
+
+        times = line.split(
+            "-->"
+        )
+
+        try:
+
+            start = parse_time(
+                times[0]
+                .strip()
+                .split(" ")[0]
+            )
+
+            end = parse_time(
+                times[1]
+                .strip()
+                .split(" ")[0]
+            )
+
+        except Exception:
+
+            i += 1
+            continue
+
+        i += 1
+
+        text_lines = []
+
+        while (
+            i < len(lines)
+            and lines[i].strip()
+        ):
+
+            text_lines.append(
+                lines[i].strip()
+            )
+
+            i += 1
+
+        text = _clean_text(
+            " ".join(text_lines)
+        )
+
+        if text:
+
+            segments.append(
+                {
+                    "text": text,
+                    "start": start,
+                    "duration": max(
+                        0,
+                        end - start,
+                    ),
+                }
+            )
+
+        i += 1
+
+    return _deduplicate_segments(
+        segments
+    )
+
+
+# ============================================================
+# BASIC SUBTITLE PARSER
+# ============================================================
+
+def _parse_basic_subtitles(content):
+
+    text = _clean_text(
+        " ".join(
+            line.strip()
+            for line in content.splitlines()
+            if (
+                line.strip()
+                and not line.strip().isdigit()
+                and "-->" not in line
+            )
+        )
+    )
+
+    if text:
+
+        return [
+            {
+                "text": text,
+                "start": 0.0,
+                "duration": 0.0,
+            }
+        ]
+
+    return []
+
+
+# ============================================================
+# YT-DLP FALLBACK
+# ============================================================
+
+def _fetch_yt_dlp_segments(url):
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+
+        outtmpl = os.path.join(
+            temp_dir,
+            "subs",
+        )
+
+        opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en"],
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        try:
+
+            with yt_dlp.YoutubeDL(
+                opts
+            ) as ydl:
+
                 ydl.download([url])
-                
-            # Check for downloaded files starting with 'subs.en.'
-            # yt-dlp saves them as 'subs.en.vtt', 'subs.en.json3', or 'subs.en.srv3'
-            sub_files = glob.glob(os.path.join(temp_dir, 'subs.en.*'))
-            if not sub_files:
-                return None, "No English subtitles or automatic captions downloaded by yt-dlp."
-                
-            sub_file_path = sub_files[0]
-            with open(sub_file_path, 'r', encoding='utf-8') as f:
+
+            files = glob.glob(
+                os.path.join(
+                    temp_dir,
+                    "subs.en.*",
+                )
+            )
+
+            if not files:
+
+                return (
+                    None,
+                    "No English subtitles or automatic captions found.",
+                )
+
+            files.sort(
+                key=lambda p:
+                    0 if p.endswith(".json3")
+                    else 1
+            )
+
+            path = files[0]
+
+            with open(
+                path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+
                 content = f.read()
-                
-            # Parse according to format
-            if sub_file_path.endswith('.json3'):
-                data = json.loads(content)
-                text_parts = []
-                for event in data.get('events', []):
-                    if 'segs' in event:
-                        for seg in event['segs']:
-                            utf8_text = seg.get('utf8', '').strip()
-                            if utf8_text and not utf8_text.startswith('\n'):
-                                text_parts.append(utf8_text)
-                cleaned_text = re.sub(r'\s+', ' ', " ".join(text_parts)).strip()
-                return cleaned_text, None
-                
-            elif sub_file_path.endswith('.vtt'):
-                lines = content.split('\n')
-                cleaned_lines = []
-                for line in lines:
-                    line = line.strip()
-                    if (not line or 
-                        line.startswith('WEBVTT') or 
-                        line.startswith('Kind:') or 
-                        line.startswith('Language:') or 
-                        line.startswith('Style:') or
-                        '-->' in line or 
-                        line.isdigit()):
-                        continue
-                    line_clean = re.sub(r'<[^>]+>', '', line)
-                    if line_clean:
-                        cleaned_lines.append(line_clean)
-                
-                # De-duplicate lines (VTT often repeats lines)
-                unique_lines = []
-                for cl in cleaned_lines:
-                    if not unique_lines or unique_lines[-1] != cl:
-                        unique_lines.append(cl)
-                return " ".join(unique_lines), None
-                
+
+            if path.endswith(".json3"):
+
+                segments = _parse_json3(
+                    content
+                )
+
+            elif path.endswith(".vtt"):
+
+                segments = _parse_vtt(
+                    content
+                )
+
             else:
-                # Basic parsing for SRT / other formats
-                lines = content.split('\n')
-                cleaned_lines = []
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.isdigit() or '-->' in line:
-                        continue
-                    cleaned_lines.append(line)
-                return " ".join(cleaned_lines), None
-                
+
+                segments = _parse_basic_subtitles(
+                    content
+                )
+
+            if segments:
+
+                return segments, None
+
+            return (
+                None,
+                "Subtitle file was found, but no readable captions were parsed.",
+            )
+
         except Exception as e:
-            return None, f"yt-dlp subtitle download failed: {str(e)}"
+
+            return (
+                None,
+                f"yt-dlp subtitle download failed: {str(e)}",
+            )
+
+
+# ============================================================
+# MAIN TRANSCRIPT FUNCTION
+# ============================================================
+
+def get_transcript_with_timestamps(url):
+
+    video_id = extract_video_id(
+        url
+    )
+
+    if not video_id:
+
+        return (
+            None,
+            [],
+            "Invalid YouTube URL format.",
+        )
+
+    try:
+
+        segments, err = _fetch_api_segments(
+            video_id
+        )
+
+    except Exception as e:
+
+        segments = None
+        err = str(e)
+
+    if segments:
+
+        transcript = " ".join(
+            seg["text"]
+            for seg in segments
+        )
+
+        return (
+            transcript,
+            segments,
+            None,
+        )
+
+    print(
+        "youtube-transcript-api failed "
+        f"({err}). Retrying with yt-dlp fallback..."
+    )
+
+    segments, fallback_err = (
+        _fetch_yt_dlp_segments(
+            url
+        )
+    )
+
+    if segments:
+
+        transcript = " ".join(
+            seg["text"]
+            for seg in segments
+        )
+
+        return (
+            transcript,
+            segments,
+            None,
+        )
+
+    return (
+        None,
+        [],
+        "Transcript extraction failed. "
+        f"API error: {err}. "
+        f"Fallback error: {fallback_err}",
+    )
+
+
+# ============================================================
+# BACKWARD-COMPATIBLE FUNCTION
+# ============================================================
 
 def get_transcript(url):
-    """
-    Main entry point for extracting the transcript.
-    Attempts youtube-transcript-api first, then falls back to yt-dlp.
-    """
-    video_id = extract_video_id(url)
-    if not video_id:
-        return None, "Invalid YouTube URL format."
-    
-    # Try youtube-transcript-api (fastest & cleanest)
-    transcript, err = get_transcript_via_api(video_id)
-    if transcript:
-        return transcript, None
-    
-    # Try yt-dlp (reliable fallback)
-    print(f"youtube-transcript-api failed ({err}). Retrying with yt-dlp fallback...")
-    return get_transcript_via_yt_dlp(url)
 
-if __name__ == "__main__":
-    # Quick CLI test
-    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ" # Never Gonna Give You Up
-    print("Testing extractor.py with URL:", test_url)
-    meta, err = get_video_metadata(test_url)
-    if err:
-        print("Metadata error:", err)
-    else:
-        print("Metadata title:", meta['title'])
-        print("Metadata channel:", meta['channel'])
-        
-    transcript, err = get_transcript(test_url)
-    if err:
-        print("Transcript error:", err)
-    else:
-        print("Transcript preview (first 200 chars):", transcript[:200])
+    transcript, _, err = (
+        get_transcript_with_timestamps(
+            url
+        )
+    )
+
+    return transcript, err
